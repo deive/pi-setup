@@ -1,0 +1,7 @@
+enable_ssh=true
+enable_wifi=true
+wifi_country=""
+wifi_ssid=""
+wifi_psk=""
+pi_hostname=""
+pi_user_password=""

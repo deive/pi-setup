@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+
+# TODO: Use proper error handling: http://mywiki.wooledge.org/BashFAQ/105
+set -e
+
+# Ask if the user wants to scan, if so output the SSIDs found
+wifi_scan() {
+	read -r -p "Scan for nearby WiFi SSIDs? [y/N] " response
+	if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+		nmcli dev wifi | sed '1d' | tr -s ' ' | cut -d' ' -f3 | sed -e 's/^/ - /'
+	fi
+}
+
+# Interactive input if there is no config file
+config_input() {
+	echo "$0.config not found"
+	echo "- SSH"
+	read -r -p "Start SSH on Pi? [y/N] " response
+	if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+		enable_ssh=true
+	else
+		enable_ssh=false
+	fi
+	
+	echo "- WiFi"
+	read -r -p "Connect Pi to WiFi? [y/N] " response
+	if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+		enable_wifi=true
+		echo "(see https://en.wikipedia.org/wiki/List_of_ISO_3166_country_codes)"
+		read -p "2 letter country code [gb]: " wifi_country
+		wifi_country=${wifi_country:-gb}
+		wifi_scan
+		while [ -z ${wifi_ssid} ]; do
+			read -p "SSID for Pi to connect to: " wifi_ssid
+		done
+		while [ -z ${wifi_psk} ]; do
+			read -s -p "Passcode: " wifi_psk
+			echo
+		done
+	else
+		enable_wifi=false
+	fi
+	
+	read -p "Hostname for your Pi [raspberrypi]: " pi_hostname
+	pi_hostname=${pi_hostname:-raspberrypi}
+	while [ -z ${pi_user_password} ]; do
+		read -s -p "Pi user password: " pi_user_password
+		echo
+	done
+}
+
+# Read in config, or ask for input
+config() {
+	if test -f "$0.config"; then
+		. $0.config
+	else
+		config_input
+	fi
+}
+
+# Finds the mount points for the boot and rootfs partitions
+find_sd_card() {
+	sd_dir_boot=`mount -l | grep -F [boot] | awk '{if ($3) print $3}'`
+	sd_dir_root=`mount -l | grep -F [rootfs] | awk '{if ($3) print $3}'`
+	
+	if [ -z "$sd_dir_boot" ] || [ -z "$sd_dir_root" ]; then
+		echo "Can't find mounted SD card, exiting"
+		exit 1
+	else
+		echo "Found SD partitions mounted at:"
+		echo
+		echo $sd_dir_boot
+		echo $sd_dir_root
+		echo
+		read -s -p "Press enter to continue if this is correct, ctrl-c to stop."
+		echo
+		echo
+	fi
+}
+
+# Updates boot partition (ssh and wpa_supplicant.conf)
+update_boot() {
+	if [ "$enable_ssh" = true ]; then
+		echo "Modifying " $sd_dir_boot"/..."
+		echo "- creating ssh"
+		touch $sd_dir_boot/ssh
+	fi
+}
+
+# Updates rootfs partition ()
+update_rootfs() {
+	echo "Modifying " $sd_dir_root"/..."
+	if [ "$enable_wifi" = true ]; then
+		echo "- updating etc/wpa_supplicant/wpa_supplicant.conf"
+		echo country=GB >> $sd_dir_root/etc/wpa_supplicant/wpa_supplicant.conf
+		wpa_passphrase "$wifi_ssid" "$wifi_psk" | sed '/^\t#/d' >> $sd_dir_root/etc/wpa_supplicant/wpa_supplicant.conf
+	fi
+	
+	echo "- updating etc/hostname"
+	cat <<EOF >$sd_dir_root/etc/hostname
+$pi_hostname
+EOF
+	echo "- updating etc/hosts"
+	sed -i 's/127.0.1.1\t\t[a-zA-Z\-]*$/127.0.1.1\t\t'$pi_hostname'/g' $sd_dir_root/etc/hosts
+
+	echo "- updating etc/shadow"
+	pi_user_password=`openssl passwd -6 -salt $(head -c18 /dev/urandom | openssl base64) "$pi_user_password"`
+	pi_old_password=`cat $sd_dir_root/etc/shadow | awk -F: '{ if ($1 == "pi") print $2 }'`
+	sed -i 's#'$pi_old_password'#'$pi_user_password'#g' $sd_dir_root/etc/shadow
+}
+
+# Main method run when the user is root
+run() {
+	find_sd_card
+	config
+	echo
+	update_boot
+	update_rootfs
+	echo "Done!"
+}
+
+# Re-runs this script as root
+run_as_root() {
+	exec sudo bash "$0" "$@"
+}
+
+# Check for sudo and elevate if required
+if [ "$UID" != 0 ]; then 
+	run_as_root 
+else 
+	run
+fi
