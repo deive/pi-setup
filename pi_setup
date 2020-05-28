@@ -22,6 +22,13 @@ config_input() {
 		enable_ssh=false
 	fi
 	
+	read -p "Hostname for your Pi [raspberrypi]: " pi_hostname
+	pi_hostname=${pi_hostname:-raspberrypi}
+	while [ -z ${pi_user_password} ]; do
+		read -s -p "Pi user password: " pi_user_password
+		echo
+	done
+	
 	echo "- WiFi"
 	read -r -p "Connect Pi to WiFi? [y/N] " response
 	if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
@@ -41,17 +48,22 @@ config_input() {
 		enable_wifi=false
 	fi
 	
-	read -p "Hostname for your Pi [raspberrypi]: " pi_hostname
-	pi_hostname=${pi_hostname:-raspberrypi}
-	while [ -z ${pi_user_password} ]; do
-		read -s -p "Pi user password: " pi_user_password
-		echo
-	done
+	echo "- Ethernet"
+	read -r -p "Fix the ethernet IP address? [y/N] " response
+	if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+		ethernet_fixed_ip=true
+		read -p "IP address [3.141.59.1]: " ethernet_fixed_ip_address
+		ethernet_fixed_ip_address=${ethernet_fixed_ip_address:-3.141.59.1}
+		read -p "Routers (blank for none): " ethernet_fixed_ip_routers
+		read -p "Domain Name Servers (blank for none): " ethernet_fixed_ip_domain_name_servers
+	else
+		ethernet_fixed_ip=false
+	fi
 }
 
 # Read in config, or ask for input
 config() {
-	if test -f "$0.config"; then
+	if test -f "$0.configg"; then
 		. $0.config
 	else
 		config_input
@@ -78,7 +90,7 @@ find_sd_card() {
 	fi
 }
 
-# Updates boot partition (ssh and wpa_supplicant.conf)
+# Updates boot partition
 update_boot() {
 	if [ "$enable_ssh" = true ]; then
 		echo "Modifying " $sd_dir_boot"/..."
@@ -87,12 +99,12 @@ update_boot() {
 	fi
 }
 
-# Updates rootfs partition ()
+# Updates rootfs partition
 update_rootfs() {
 	echo "Modifying " $sd_dir_root"/..."
 	if [ "$enable_wifi" = true ]; then
 		echo "- updating etc/wpa_supplicant/wpa_supplicant.conf"
-		echo country=GB >> $sd_dir_root/etc/wpa_supplicant/wpa_supplicant.conf
+		echo "country=$wifi_country" >> $sd_dir_root/etc/wpa_supplicant/wpa_supplicant.conf
 		wpa_passphrase "$wifi_ssid" "$wifi_psk" | sed '/^\t#/d' >> $sd_dir_root/etc/wpa_supplicant/wpa_supplicant.conf
 	fi
 	
@@ -107,6 +119,18 @@ EOF
 	pi_user_password=`openssl passwd -6 -salt $(head -c18 /dev/urandom | openssl base64) "$pi_user_password"`
 	pi_old_password=`cat $sd_dir_root/etc/shadow | awk -F: '{ if ($1 == "pi") print $2 }'`
 	sed -i 's#'$pi_old_password'#'$pi_user_password'#g' $sd_dir_root/etc/shadow
+	
+	if [ "$ethernet_fixed_ip" = true ]; then
+		echo "- updating etc/dhcpcd.conf"
+		echo "interface eth0" >> $sd_dir_root/etc/dhcpcd.conf
+		echo "static ip_address=$ethernet_fixed_ip_address" >> $sd_dir_root/etc/dhcpcd.conf
+		if [ -n "$ethernet_fixed_ip_routers" ]; then
+			echo "static routers=$ethernet_fixed_ip_routers" >> $sd_dir_root/etc/dhcpcd.conf
+		fi
+		if [ -n "$ethernet_fixed_ip_domain_name_servers" ]; then
+			echo "static domain_name_servers=$ethernet_fixed_ip_domain_name_servers" >> $sd_dir_root/etc/dhcpcd.conf
+		fi
+	fi
 }
 
 # Main method run when the user is root

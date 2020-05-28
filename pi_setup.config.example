@@ -5,3 +5,7 @@ wifi_ssid=""
 wifi_psk=""
 pi_hostname=""
 pi_user_password=""
+ethernet_fixed_ip=true
+ethernet_fixed_ip_address="3.141.59.10"
+ethernet_fixed_ip_routers="3.141.59.1"
+ethernet_fixed_ip_domain_name_servers="3.141.59.1"
