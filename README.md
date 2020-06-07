@@ -12,6 +12,8 @@ I have commented some of the script so please read before running! This requires
 
 Features:
 1. Enable SSH
+    - Generate new SSH key on clientlocal machine and use this public key as an autherised host
+    - Disable password authenitication over SSH
 2. Enable and bind WiFi (with encrypted passphrase)
     - On desktop first run wizard, you can skip the WiFi section as the pi is already connected
     - On Lite, the startup wizard doesn't run, so the WiFi continues to be blocked by rfkill (even though the country is set). You will need to run `rfkill unblock wlan` and then reboot.
