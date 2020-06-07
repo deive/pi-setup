@@ -8,7 +8,8 @@ cd pi-setup
 chmod +x pi-setup
 ./pi-setup
 ```
-I have commented some of the script so please read before running! This requires root access (and will ask for it).
+I have commented some of the script so please read before running! 
+This requires root access (and will ask for it), but should be run under your standard user if you want to generate an SSH key.
 
 Features:
 1. Enable SSH
@@ -28,4 +29,11 @@ You can use a config file for the values, instead of the interactive shell:
 ```
 mv pi_setup.config.example pi_setup.config
 nano pi_setup.config
+./pi-setup
+```
+You can also specify a config file:
+```
+mv dhcp_wifi.config.example dhcp_wifi.config
+nano dhcp_wifi.config
+./pi-setup dhcp_wifi
 ```
