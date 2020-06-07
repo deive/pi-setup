@@ -3,14 +3,14 @@ pi_user_password=""
 
 enable_ssh=true
 enable_wifi=true
-wifi_country=""
+wifi_country="GB"
 wifi_ssid=""
 wifi_psk=""
 
 ethernet_fixed_ip=true
 ethernet_fixed_ip_address="3.141.59.1"
 ethernet_fixed_ip_routers=""
-ethernet_fixed_ip_domain_name_servers=""
+ethernet_fixed_ip_domain_name_servers="192.168.1.1"
 
 # This requires fixed ethernet IP as well.
 enable_bridging=true

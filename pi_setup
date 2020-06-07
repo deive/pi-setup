@@ -11,9 +11,62 @@ wifi_scan() {
 	fi
 }
 
+config_wifi_input() {
+	echo "- WiFi"
+	read -r -p "Connect Pi to WiFi? [y/N] " response
+	if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+		enable_wifi=true
+		echo "(see https://en.wikipedia.org/wiki/List_of_ISO_3166_country_codes)"
+		read -p "2 letter country code [GB]: " wifi_country
+		wifi_country=${wifi_country:-GB}
+		wifi_scan
+		while [ -z ${wifi_ssid} ]; do
+			read -p "SSID for Pi to connect to: " wifi_ssid
+		done
+		while [ -z ${wifi_psk} ]; do
+			read -s -p "Passcode: " wifi_psk
+			echo
+		done
+	else
+		enable_wifi=false
+	fi
+}
+
+config_ethernet_input() {
+	echo "- Ethernet"
+	read -r -p "Fix the ethernet IP address? [y/N] " response
+	if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+		ethernet_fixed_ip=true
+		read -p "IP address [3.141.59.1]: " ethernet_fixed_ip_address
+		ethernet_fixed_ip_address=${ethernet_fixed_ip_address:-3.141.59.1}
+		read -p "Routers (blank for none): " ethernet_fixed_ip_routers
+		read -p "Domain Name Servers (blank for none): " ethernet_fixed_ip_domain_name_servers
+	else
+		ethernet_fixed_ip=false
+	fi
+}
+
+config_bridging_input() {
+	if [ "$ethernet_fixed_ip" = true ]; then
+		echo "- Bridging"
+		read -r -p "Enable bridging interal ethernet clients to public WiFi? [y/N] " response
+		if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+			enable_bridging=true
+
+			# TODO: Check for blank ethernet_fixed_ip_domain_name_servers, as this is required here.
+
+			read -p "IP Netmask [255.255.255.0]: " bridging_fixed_ip_netmask
+			bridging_fixed_ip_netmask=${bridging_fixed_ip_netmask:-255.255.255.0}
+			read -p "DHCP Range [3.141.59.10,3.141.59.254,12h]: " bridging_dhcp_range
+			bridging_dhcp_range=${bridging_dhcp_range:-3.141.59.10,3.141.59.254,12h}
+		else
+			enable_bridging=false
+		fi
+	fi
+}
+
 # Interactive input if there is no config file
 config_input() {
-	echo "$0.config not found"
 	echo "- SSH"
 	read -r -p "Start SSH on Pi? [y/N] " response
 	if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
@@ -29,42 +82,17 @@ config_input() {
 		echo
 	done
 	
-	echo "- WiFi"
-	read -r -p "Connect Pi to WiFi? [y/N] " response
-	if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-		enable_wifi=true
-		echo "(see https://en.wikipedia.org/wiki/List_of_ISO_3166_country_codes)"
-		read -p "2 letter country code [gb]: " wifi_country
-		wifi_country=${wifi_country:-gb}
-		wifi_scan
-		while [ -z ${wifi_ssid} ]; do
-			read -p "SSID for Pi to connect to: " wifi_ssid
-		done
-		while [ -z ${wifi_psk} ]; do
-			read -s -p "Passcode: " wifi_psk
-			echo
-		done
-	else
-		enable_wifi=false
-	fi
-	
-	echo "- Ethernet"
-	read -r -p "Fix the ethernet IP address? [y/N] " response
-	if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-		ethernet_fixed_ip=true
-		read -p "IP address [3.141.59.1]: " ethernet_fixed_ip_address
-		ethernet_fixed_ip_address=${ethernet_fixed_ip_address:-3.141.59.1}
-		read -p "Routers (blank for none): " ethernet_fixed_ip_routers
-		read -p "Domain Name Servers (blank for none): " ethernet_fixed_ip_domain_name_servers
-	else
-		ethernet_fixed_ip=false
-	fi
+	config_wifi_input
+	config_ethernet_input
+	config_bridging_input
 }
 
 # Read in config, or ask for input
 config() {
-	if test -f "$0.configg"; then
-		. $0.config
+	if [ -z "${args[0]}" ] && [ -f "$0.config" ]; then
+		. "$0.config"
+	elif [ -f "${args[0]}.config" ]; then
+		. "${args[0]}.config"
 	else
 		config_input
 	fi
@@ -97,17 +125,107 @@ update_boot() {
 		echo "- creating ssh"
 		touch $sd_dir_boot/ssh
 	fi
+
+	if [ "$enable_wifi" = true ]; then
+		echo "- creating wpa_supplicant.conf"
+		echo ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev >> $sd_dir_boot/wpa_supplicant.conf
+		echo update_config=1 >> $sd_dir_boot/wpa_supplicant.conf
+		echo "country=$wifi_country" >> $sd_dir_boot/wpa_supplicant.conf
+		echo >> $sd_dir_boot/wpa_supplicant.conf
+		wpa_passphrase "$wifi_ssid" "$wifi_psk" | sed '/^\t#/d' >> $sd_dir_boot/wpa_supplicant.conf
+	fi
+}
+
+update_rootfs_fixed_ethernet() {
+	if [ "$ethernet_fixed_ip" = true ]; then
+		echo "- updating etc/dhcpcd.conf"
+		echo "interface eth0" >> $sd_dir_root/etc/dhcpcd.conf
+		echo "static ip_address=$ethernet_fixed_ip_address" >> $sd_dir_root/etc/dhcpcd.conf
+		if [ -n "$ethernet_fixed_ip_routers" ]; then
+			echo "static routers=$ethernet_fixed_ip_routers" >> $sd_dir_root/etc/dhcpcd.conf
+		fi
+		if [ -n "$ethernet_fixed_ip_domain_name_servers" ]; then
+			echo "static domain_name_servers=$ethernet_fixed_ip_domain_name_servers" >> $sd_dir_root/etc/dhcpcd.conf
+		fi
+	fi
+}
+
+update_rootfs_bridging() {
+	if [ "$enable_bridging" = true ]; then
+		echo "- updating etc/iptables"
+		mkdir -p $sd_dir_root/etc/iptables
+
+		echo "- updating etc/iptables/rules.v4"
+		cat <<'EOF' >$sd_dir_root/etc/iptables/rules.v4
+*nat
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+-A POSTROUTING -o wlan0 -j MASQUERADE
+COMMIT
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+-A FORWARD -i wlan0 -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+-A FORWARD -i eth0 -o wlan0 -j ACCEPT
+COMMIT
+EOF
+
+		echo "- updating etc/network/if-up.d/iptables"
+		cat <<'EOF' >$sd_dir_root/etc/network/if-up.d/iptables
+#!/bin/sh
+iptables-restore < /etc/iptables/rules.v4
+EOF
+		chmod +x $sd_dir_root/etc/network/if-up.d/iptables
+
+		echo "- updating etc/sysctl.conf"
+		sed -i'' s/#net.ipv4.ip_forward=1/net.ipv4.ip_forward=1/ $sd_dir_root/etc/sysctl.conf
+
+		echo "- updating etc/network/interfaces.d/eth0"
+		cat <<EOF >$sd_dir_root/etc/network/interfaces.d/eth0
+auto eth0
+allow-hotplug eth0
+iface eth0 inet static
+  address $ethernet_fixed_ip_address
+  netmask $bridging_fixed_ip_netmask
+  gateway $ethernet_fixed_ip_address
+EOF
+
+		echo "- updating etc/dnsmasq.d/bridge.conf"
+		mkdir -p $sd_dir_root/etc/dnsmasq.d
+		cat <<EOF >$sd_dir_root/etc/dnsmasq.d/bridge.conf
+interface=eth0
+bind-interfaces
+server=$ethernet_fixed_ip_domain_name_servers
+domain-needed
+bogus-priv
+dhcp-range=$bridging_dhcp_range
+EOF
+
+		echo "- creating etc/pi_setup.first_boot"
+		cat <<EOF >$sd_dir_root/etc/pi_setup.first_boot
+echo "Installing dnsmasq for WiFi bridging"
+apt install -y dnsmasq
+if [ -x "$(command -v dnsmasq)" ]; then
+	sed -i 's#sudo /etc/pi_setup.first_boot##g' /etc/rc.local
+fi
+EOF
+		chmod +x $sd_dir_root/etc/pi_setup.first_boot
+
+		echo "- updating etc/rc.local"
+		sed -i 's#exit 0##g' $sd_dir_root/etc/rc.local
+		cat <<EOF >>$sd_dir_root/etc/rc.local
+sudo /etc/pi_setup.first_boot
+exit 0
+EOF
+	fi
 }
 
 # Updates rootfs partition
 update_rootfs() {
 	echo "Modifying " $sd_dir_root"/..."
-	if [ "$enable_wifi" = true ]; then
-		echo "- updating etc/wpa_supplicant/wpa_supplicant.conf"
-		echo "country=$wifi_country" >> $sd_dir_root/etc/wpa_supplicant/wpa_supplicant.conf
-		wpa_passphrase "$wifi_ssid" "$wifi_psk" | sed '/^\t#/d' >> $sd_dir_root/etc/wpa_supplicant/wpa_supplicant.conf
-	fi
-	
 	echo "- updating etc/hostname"
 	cat <<EOF >$sd_dir_root/etc/hostname
 $pi_hostname
@@ -120,17 +238,8 @@ EOF
 	pi_old_password=`cat $sd_dir_root/etc/shadow | awk -F: '{ if ($1 == "pi") print $2 }'`
 	sed -i 's#'$pi_old_password'#'$pi_user_password'#g' $sd_dir_root/etc/shadow
 	
-	if [ "$ethernet_fixed_ip" = true ]; then
-		echo "- updating etc/dhcpcd.conf"
-		echo "interface eth0" >> $sd_dir_root/etc/dhcpcd.conf
-		echo "static ip_address=$ethernet_fixed_ip_address" >> $sd_dir_root/etc/dhcpcd.conf
-		if [ -n "$ethernet_fixed_ip_routers" ]; then
-			echo "static routers=$ethernet_fixed_ip_routers" >> $sd_dir_root/etc/dhcpcd.conf
-		fi
-		if [ -n "$ethernet_fixed_ip_domain_name_servers" ]; then
-			echo "static domain_name_servers=$ethernet_fixed_ip_domain_name_servers" >> $sd_dir_root/etc/dhcpcd.conf
-		fi
-	fi
+	update_rootfs_fixed_ethernet
+	update_rootfs_bridging
 }
 
 # Main method run when the user is root
@@ -145,12 +254,14 @@ run() {
 
 # Re-runs this script as root
 run_as_root() {
+	echo re-running as root: "$0" "$@"
 	exec sudo bash "$0" "$@"
 }
 
+args=("$@")
 # Check for sudo and elevate if required
-if [ "$UID" != 0 ]; then 
+if [ "$UID" != 0 ]; then
 	run_as_root 
-else 
+else
 	run
 fi
