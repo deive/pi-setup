@@ -2,6 +2,9 @@ pi_hostname=""
 pi_user_password=""
 
 enable_ssh=true
+create_ssh_key=true
+disable_ssh_password=true
+
 enable_wifi=true
 wifi_country="GB"
 wifi_ssid=""

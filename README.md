@@ -20,6 +20,7 @@ Features:
     - On desktop first run wizard, you can just click next with an empty password as this is already updated.
 5. Set fixed IP for ethernet
 6. Setup Bridging from internal ethernet clients to external WiFi (with dnsmasq)
+    - I have yet to get a run on first boot solution working, but after setup run `sudo /etc/rc.local` to install `dnsmasq`.
 
 You can use a config file for the values, instead of the interactive shell:
 ```

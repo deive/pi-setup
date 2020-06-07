@@ -65,16 +65,30 @@ config_bridging_input() {
 	fi
 }
 
-# Interactive input if there is no config file
-config_input() {
+config_ssh_input() {
 	echo "- SSH"
 	read -r -p "Start SSH on Pi? [y/N] " response
 	if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
 		enable_ssh=true
+		read -r -p "Create an SSH key? [y/N] " response
+		if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+			create_ssh_key=true
+			read -r -p "Disable password for SSH? [y/N] " response
+			if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+				disable_ssh_password=true
+			else
+				disable_ssh_password=false
+			fi
+		else
+			create_ssh_key=false
+		fi
 	else
 		enable_ssh=false
 	fi
-	
+}
+
+# Interactive input if there is no config file
+config_input() {
 	read -p "Hostname for your Pi [raspberrypi]: " pi_hostname
 	pi_hostname=${pi_hostname:-raspberrypi}
 	while [ -z ${pi_user_password} ]; do
@@ -82,6 +96,7 @@ config_input() {
 		echo
 	done
 	
+	config_ssh_input
 	config_wifi_input
 	config_ethernet_input
 	config_bridging_input
@@ -93,8 +108,21 @@ config() {
 		. "$0.config"
 	elif [ -f "${args[0]}.config" ]; then
 		. "${args[0]}.config"
-	else
+	elif [ "$1" = true ]; then
 		config_input
+	else
+		echo "While running as user we can generate a useable SSH key, if required. (These values will need to be re-entered as root)"
+		read -r -p "Generate a new SSH key? [Y/n] " response
+		response=${response:-y}
+		if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+			enable_ssh=true
+			create_ssh_key=true
+			read -p "Hostname for your Pi [raspberrypi]: " pi_hostname
+			pi_hostname=${pi_hostname:-raspberrypi}
+		else
+			enable_ssh=false
+			create_ssh_key=false
+		fi
 	fi
 }
 
@@ -223,6 +251,20 @@ EOF
 	fi
 }
 
+update_rootfs_ssh_key() {
+	if [ "$enable_ssh" = true ] && [ "$create_ssh_key" = true ]; then
+		echo "- copying public half of SSH key to /home/pi/.ssh/"
+		mkdir -p -m 700 $sd_dir_root/home/pi/.ssh/
+		cp ${args[1]}/.ssh/$pi_hostname.pub $sd_dir_root/home/pi/.ssh/authorized_keys
+		chown -R 1000:1000 $sd_dir_root/home/pi/.ssh/
+
+		if [ "$disable_ssh_password" = true ]; then
+			echo "- updating etc/ssh/sshd_config"
+			sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/g' $sd_dir_root/etc/ssh/sshd_config
+		fi
+	fi
+}
+
 # Updates rootfs partition
 update_rootfs() {
 	echo "Modifying " $sd_dir_root"/..."
@@ -238,14 +280,13 @@ EOF
 	pi_old_password=`cat $sd_dir_root/etc/shadow | awk -F: '{ if ($1 == "pi") print $2 }'`
 	sed -i 's#'$pi_old_password'#'$pi_user_password'#g' $sd_dir_root/etc/shadow
 	
+	update_rootfs_ssh_key
 	update_rootfs_fixed_ethernet
 	update_rootfs_bridging
 }
 
 # Main method run when the user is root
 run() {
-	find_sd_card
-	config
 	echo
 	update_boot
 	update_rootfs
@@ -254,14 +295,35 @@ run() {
 
 # Re-runs this script as root
 run_as_root() {
-	echo re-running as root: "$0" "$@"
-	exec sudo bash "$0" "$@"
+	echo re-running as root: "$0" "${args[0]}" "$HOME"
+	echo
+	exec sudo bash "$0" "${args[0]}" "$HOME"
+}
+
+# This needs to be owned by the user, so run before root
+generate_ssh_key() {
+	if [ "$enable_ssh" = true ] && [ "$create_ssh_key" = true ]; then
+		echo "- creating key in $HOME/.ssh/ called $pi_hostname"
+		mkdir -p $HOME/.ssh
+		ssh-keygen -t ed25519 -f $HOME/.ssh/$pi_hostname
+		echo
+	fi
 }
 
 args=("$@")
+echo args: $args
+
 # Check for sudo and elevate if required
 if [ "$UID" != 0 ]; then
+	config false
+	generate_ssh_key
 	run_as_root 
 else
+	config true
+	find_sd_card
+	if [ "$enable_ssh" = true ] && [ "$create_ssh_key" = true ]; then
+		echo "If you ran this directly as root then a new SSH will not have been generated."
+		read -s -p "Press enter to continue if this is correct, ctrl-c to stop and then re-run as non-root."
+	fi
 	run
 fi
