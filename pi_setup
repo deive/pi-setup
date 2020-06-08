@@ -11,6 +11,7 @@ wifi_scan() {
 	fi
 }
 
+# Interactive input for WiFi config.
 config_wifi_input() {
 	echo "- WiFi"
 	read -r -p "Connect Pi to WiFi? [y/N] " response
@@ -32,6 +33,7 @@ config_wifi_input() {
 	fi
 }
 
+# Interactive input for ethernet fixed IP config.
 config_ethernet_input() {
 	echo "- Ethernet"
 	read -r -p "Fix the ethernet IP address? [y/N] " response
@@ -46,6 +48,7 @@ config_ethernet_input() {
 	fi
 }
 
+# Interactive input for bridging config.
 config_bridging_input() {
 	if [ "$ethernet_fixed_ip" = true ]; then
 		echo "- Bridging"
@@ -65,6 +68,7 @@ config_bridging_input() {
 	fi
 }
 
+# Interactive input for SSH config.
 config_ssh_input() {
 	echo "- SSH"
 	read -r -p "Start SSH on Pi? [y/N] " response
@@ -87,7 +91,7 @@ config_ssh_input() {
 	fi
 }
 
-# Interactive input if there is no config file
+# Interactive input if there is no config file.
 config_input() {
 	read -p "Hostname for your Pi [raspberrypi]: " pi_hostname
 	pi_hostname=${pi_hostname:-raspberrypi}
@@ -102,7 +106,7 @@ config_input() {
 	config_bridging_input
 }
 
-# Read in config, or ask for input
+# Read in config, or ask for input.
 config() {
 	if [ -z "${args[0]}" ] && [ -f "$0.config" ]; then
 		. "$0.config"
@@ -126,7 +130,7 @@ config() {
 	fi
 }
 
-# Finds the mount points for the boot and rootfs partitions
+# Finds the mount points for the boot and rootfs partitions.
 find_sd_card() {
 	sd_dir_boot=`mount -l | grep -F [boot] | awk '{if ($3) print $3}'`
 	sd_dir_root=`mount -l | grep -F [rootfs] | awk '{if ($3) print $3}'`
@@ -146,7 +150,7 @@ find_sd_card() {
 	fi
 }
 
-# Updates boot partition
+# Updates boot partition.
 update_boot() {
 	if [ "$enable_ssh" = true ]; then
 		echo "Modifying " $sd_dir_boot"/..."
@@ -164,6 +168,7 @@ update_boot() {
 	fi
 }
 
+# Setup fixed ethernet IP.
 update_rootfs_fixed_ethernet() {
 	if [ "$ethernet_fixed_ip" = true ]; then
 		echo "- updating etc/dhcpcd.conf"
@@ -178,6 +183,22 @@ update_rootfs_fixed_ethernet() {
 	fi
 }
 
+# Create a first boot service that installs dnsmasq.
+update_rootfs_bridging_first_boot() {
+	echo "- creating /etc/pi_setup.first_boot"
+	cat <<EOF >$sd_dir_root/etc/pi_setup.first_boot
+echo "Installing dnsmasq for WiFi bridging"
+apt install -y dnsmasq
+EOF
+	chmod +x $sd_dir_root/etc/pi_setup.first_boot
+
+	echo "- adding pi_setup.first_boot run command to history - press up in terminal to run."
+	cat <<EOF >$sd_dir_root/home/pi/.bash_history
+sudo /etc/pi_setup.first_boot
+EOF
+}
+
+# Updates config files for dnsmasq to bridge internal ethernet to external WiFi.
 update_rootfs_bridging() {
 	if [ "$enable_bridging" = true ]; then
 		echo "- updating etc/iptables"
@@ -232,25 +253,12 @@ bogus-priv
 dhcp-range=$bridging_dhcp_range
 EOF
 
-		echo "- creating etc/pi_setup.first_boot"
-		cat <<EOF >$sd_dir_root/etc/pi_setup.first_boot
-echo "Installing dnsmasq for WiFi bridging"
-apt install -y dnsmasq
-if [ -x "$(command -v dnsmasq)" ]; then
-	sed -i 's#sudo /etc/pi_setup.first_boot##g' /etc/rc.local
-fi
-EOF
-		chmod +x $sd_dir_root/etc/pi_setup.first_boot
-
-		echo "- updating etc/rc.local"
-		sed -i 's#exit 0##g' $sd_dir_root/etc/rc.local
-		cat <<EOF >>$sd_dir_root/etc/rc.local
-sudo /etc/pi_setup.first_boot
-exit 0
-EOF
+		update_rootfs_bridging_first_boot
 	fi
 }
 
+# Copies previously created public SSH key from users .ssh directory as the single authorized key.
+# Disables password auth over SSH.
 update_rootfs_ssh_key() {
 	if [ "$enable_ssh" = true ] && [ "$create_ssh_key" = true ]; then
 		echo "- copying public half of SSH key to /home/pi/.ssh/"
@@ -265,7 +273,7 @@ update_rootfs_ssh_key() {
 	fi
 }
 
-# Updates rootfs partition
+# Updates rootfs partition.
 update_rootfs() {
 	echo "Modifying " $sd_dir_root"/..."
 	echo "- updating etc/hostname"
@@ -285,7 +293,7 @@ EOF
 	update_rootfs_bridging
 }
 
-# Main method run when the user is root
+# Main method run when the user is root.
 run() {
 	echo
 	update_boot
@@ -293,27 +301,30 @@ run() {
 	echo "Done!"
 }
 
-# Re-runs this script as root
+# Re-runs this script as root.
 run_as_root() {
 	echo re-running as root: "$0" "${args[0]}" "$HOME"
 	echo
 	exec sudo bash "$0" "${args[0]}" "$HOME"
 }
 
-# This needs to be owned by the user, so run before root
+# This needs to be owned by the user, so run before root.
 generate_ssh_key() {
 	if [ "$enable_ssh" = true ] && [ "$create_ssh_key" = true ]; then
 		echo "- creating key in $HOME/.ssh/ called $pi_hostname"
 		mkdir -p $HOME/.ssh
-		ssh-keygen -t ed25519 -f $HOME/.ssh/$pi_hostname
+		ssh-keygen -t ed25519 -f $HOME/.ssh/$pi_hostname || true
+		if [ ! -f "$HOME/.ssh/$pi_hostname" ]; then
+			echo "Required SSH file not created, exiting"
+			exit 1
+		fi
 		echo
 	fi
 }
 
 args=("$@")
-echo args: $args
 
-# Check for sudo and elevate if required
+# Check for sudo and elevate if required.
 if [ "$UID" != 0 ]; then
 	config false
 	generate_ssh_key
@@ -323,7 +334,7 @@ else
 	find_sd_card
 	if [ "$enable_ssh" = true ] && [ "$create_ssh_key" = true ]; then
 		echo "If you ran this directly as root then a new SSH will not have been generated."
-		read -s -p "Press enter to continue if this is correct, ctrl-c to stop and then re-run as non-root."
+		read -s -p "Press enter to continue if you ran under your user, ctrl-c to stop and then re-run as non-root."
 	fi
 	run
 fi
